@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use MongoDB\BSON\UTCDateTime;
 use romanzipp\QueueMonitor\Controllers\Payloads\Metric;
 use romanzipp\QueueMonitor\Controllers\Payloads\Metrics;
 use romanzipp\QueueMonitor\Models\Contracts\MonitorContract;
@@ -89,24 +90,55 @@ class ShowQueueMonitorController
 
         $metrics = new Metrics();
 
-        $aggregationColumns = [
-            DB::raw('COUNT(*) as count'),
-            DB::raw('SUM(time_elapsed) as total_time_elapsed'),
-            DB::raw('AVG(time_elapsed) as average_time_elapsed'),
-        ];
-
-        $aggregatedInfo = QueueMonitor::getModel()
-            ->newQuery()
-            ->select($aggregationColumns)
-            ->where('started_at', '>=', Carbon::now()->subDays($timeFrame))
-            ->first();
-
-        $aggregatedComparisonInfo = QueueMonitor::getModel()
-            ->newQuery()
-            ->select($aggregationColumns)
-            ->where('started_at', '>=', Carbon::now()->subDays($timeFrame * 2))
-            ->where('started_at', '<=', Carbon::now()->subDays($timeFrame))
-            ->first();
+        $aggregatedInfo = collect(DB::table(
+                QueueMonitor::getModel()->getTable()
+            )->raw(function ($collection) use ($timeFrame) {
+                return $collection->aggregate(
+                    [
+                        [
+                            '$match' => [
+                                'started_at' => [
+                                    '$gte' => new UTCDateTime(Carbon::now()->subDays($timeFrame)->format('Uv')),
+                                ],
+                            ],
+                        ],
+                        [
+                            '$group' => [
+                                '_id' => 1,
+                                'count' => ['$sum' => 1],
+                                'total_time_elapsed' => ['$sum' => '$time_elapsed'],
+                                'average_time_elapsed' => ['$avg' => '$time_elapsed'],
+                            ],
+                        ],
+                    ],
+                    ['allowDiskUse' => true]
+                );
+            }))->first();
+        $aggregatedComparisonInfo = collect(DB::table(
+                QueueMonitor::getModel()->getTable()
+            )->raw(function ($collection) use ($timeFrame) {
+                return $collection->aggregate(
+                    [
+                        [
+                            '$match' => [
+                                'started_at' => [
+                                    '$gte' => new UTCDateTime(Carbon::now()->subDays($timeFrame * 2)->format('Uv')),
+                                    '$lte' => new UTCDateTime(Carbon::now()->subDays($timeFrame)->format('Uv')),
+                                ],
+                            ],
+                        ],
+                        [
+                            '$group' => [
+                                '_id' => 1,
+                                'count' => ['$sum' => 1],
+                                'total_time_elapsed' => ['$sum' => '$time_elapsed'],
+                                'average_time_elapsed' => ['$avg' => '$time_elapsed'],
+                            ],
+                        ],
+                    ],
+                    ['allowDiskUse' => true]
+                );
+            }))->first();
 
         if (null === $aggregatedInfo || null === $aggregatedComparisonInfo) {
             return $metrics;
